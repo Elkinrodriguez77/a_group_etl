@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter/IPYNB
+*.ipynb
+.ipynb_checkpoints/
+
+# Entorno virtual
+asesor_group/
+venv/
+env/
+ENV/
+
+# ETL/Datos
+.env
+mercately_checkpoint.json
+mercately_etl.log
+*.csv
+*.parquet
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db*.ipynb
+*.csv
+asesor_group/
+.env
