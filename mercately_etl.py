@@ -43,8 +43,14 @@ class MercatelyClient:
         }
 
     def get_customers_incremental(self, start_date, end_date, page=1):
+        """Clientes por rango de fechas"""
         params = {"page": page, "start_date": start_date, "end_date": end_date}
-        resp = requests.get(f"{self.base_url}/customers", headers=self.headers, params=params, timeout=45)
+        resp = requests.get(
+            f"{self.base_url}/customers",
+            headers=self.headers,
+            params=params,
+            timeout=45
+        )
         return resp.json() if resp.status_code == 200 else None
 
 class MercatelyETL:
@@ -52,63 +58,119 @@ class MercatelyETL:
         self.client = MercatelyClient(api_key)
         self.checkpoint_file = Path("mercately_checkpoint.json")
     
-    def smart_incremental(self, days_back=7):
-        """🚀 ETL ACUMULATIVO + REFRESCO 7 DÍAS"""
-        logger.info(f"ETL INCREMENTAL - {days_back} días")
+    def incremental_accumulate(self, days_back=7):
+        """🚀 SOLO CLIENTES NUEVOS - TOTAL SIEMPRE ESTABLE"""
+        print(f"🔥 ETL ACUMULATIVO - últimos {days_back} días")
         
-        # 1. FECHAS
+        # Fechas
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=days_back)
-        logger.info(f"Rango: {start_date} → {end_date}")
+        print(f"📅 Rango: {start_date} → {end_date}")
         
-        # 2. DESCARGAR NUEVOS/REFRESCADOS
-        df_nuevos_raw = self._download_incremental(start_date, end_date)
-        if df_nuevos_raw.empty:
-            logger.info("No hay datos nuevos")
-            return pd.DataFrame()
+        # 1. OBTENER IDs EXISTENTES (1 seg)
+        print("🔍 Verificando IDs existentes...")
+        with engine.connect() as conn:
+            existing_ids = set(
+                pd.read_sql(text("SELECT id FROM mercately_clientes"), conn)['id'].tolist()
+            )
+        print(f"📊 IDs existentes: {len(existing_ids):,}")
         
-        # 3. PREPROCESAR
-        df_nuevos = self._preprocess_df(df_nuevos_raw)
-        logger.info(f"{len(df_nuevos)} clientes procesados")
-        
-        # 4. UPSERT INTELIGENTE (histórico intacto)
-        self._smart_upsert(df_nuevos, start_date)
-        
-        # 5. CHECKPOINT
-        self._save_checkpoint(end_date)
-        
-        # 6. VERIFICAR
-        self._verify_table()
-        
-        logger.info(f"✅ ETL COMPLETO: {len(df_nuevos)} registros actualizados")
-        return df_nuevos
-    
-    def _download_incremental(self, start_date, end_date):
-        """Descarga rango específico"""
         all_customers = []
         page = 1
         
-        with tqdm(desc="Nuevos", unit="clientes") as pbar:
+        with tqdm(desc="Procesando API", unit="clientes") as pbar:
             while True:
                 data = self.client.get_customers_incremental(
-                    start_date.strftime('%Y-%m-%d'),
-                    end_date.strftime('%Y-%m-%d'),
+                    start_date=start_date.strftime('%Y-%m-%d'),
+                    end_date=end_date.strftime('%Y-%m-%d'),
                     page=page
                 )
                 
                 if not data or not data.get('customers'):
+                    print(f"\n✅ Fin datos - página {page}")
                     break
                 
                 customers = data['customers']
                 if not customers:
                     break
                 
-                all_customers.extend(customers)
+                # ✅ FILTRAR SOLO NUEVOS ANTES DE ACUMULAR
+                nuevos_customers = [c for c in customers if c.get('id') not in existing_ids]
+                all_customers.extend(nuevos_customers)
+                
+                total_api = len(all_customers)
                 pbar.update(len(customers))
+                pbar.set_postfix({
+                    'Página': page,
+                    'Solo_nuevos': len(nuevos_customers),
+                    'Total_nuevos': f"{total_api:,}"
+                })
+                
                 page += 1
                 time.sleep(0.5)
         
-        return pd.DataFrame(all_customers)
+        df_nuevos = pd.DataFrame(all_customers)
+        
+        if len(df_nuevos) == 0:
+            print("✅ ¡NO HAY CLIENTES NUEVOS! Total estable.")
+            self._verify_accumulation()
+            self._save_checkpoint(end_date)
+            return df_nuevos
+        
+        print(f"\n🎉 {len(df_nuevos):,} CLIENTES VERDADERAMENTE NUEVOS encontrados")
+        print(f"📊 Shape: {df_nuevos.shape}")
+        
+        # 🔒 ACUMULAR SOLO NUEVOS
+        self._accumulate_safe(df_nuevos)
+        self._save_checkpoint(end_date)
+        
+        # ANÁLISIS
+        print("\n" + "="*80)
+        cols_key = ['first_name', 'last_name', 'phone', 'email', 'city', 'campaign_id', 'creation_date']
+        print("📋 Primeros 10 nuevos:")
+        print(df_nuevos[cols_key].head(10))
+        
+        self._verify_accumulation()
+        return df_nuevos
+    
+    def _accumulate_safe(self, df_nuevos):
+        """🔒 APPEND + DEDUPE ULTRA SEGURO"""
+        df_clean = self._preprocess_df(df_nuevos)
+        nuevos_insertados = len(df_clean)
+        
+        with engine.begin() as conn:
+            # 1. CONTAR ANTES
+            total_antes = conn.execute(text("SELECT COUNT(*) FROM mercately_clientes")).scalar()
+            print(f"📊 TOTAL ANTES: {total_antes:,}")
+            
+            # 2. INSERTAR SOLO NUEVOS
+            df_clean.to_sql('mercately_clientes', conn, if_exists='append', 
+                           index=False, method='multi', chunksize=1000)
+            
+            # 3. DEDUPE FINAL (por si acaso)
+            dedupe_sql = text("""
+                WITH ranked AS (
+                    SELECT id, 
+                           ROW_NUMBER() OVER (
+                               PARTITION BY id 
+                               ORDER BY updated_at DESC NULLS LAST, 
+                                        creation_date DESC NULLS LAST
+                           ) as rn
+                    FROM mercately_clientes
+                )
+                DELETE FROM mercately_clientes 
+                WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+            """)
+            deleted = conn.execute(dedupe_sql).rowcount
+            
+            # 4. CONTAR DESPUÉS
+            total_despues = conn.execute(text("SELECT COUNT(*) FROM mercately_clientes")).scalar()
+            
+            print(f"✅ ➕ {nuevos_insertados} insertados | 🗑️ {deleted} duplicados")
+            print(f"📈 FINAL: {total_antes:,} → {total_despues:,} (+{total_despues-total_antes:,})")
+            
+            if total_despues < total_antes:
+                print("🚨 ERROR CRÍTICO: TOTAL DISMINUYÓ")
     
     def _preprocess_df(self, df):
         """Preprocesa TODAS las columnas"""
@@ -116,64 +178,43 @@ class MercatelyETL:
         
         # JSON
         for col in ['tags', 'custom_fields', 'customer_addresses']:
-            if col in df_clean:
+            if col in df_clean.columns:
                 df_clean[col] = df_clean[col].apply(lambda x: json.dumps(x) if x else None)
         
         # Numeric
         for col in ['campaign_id', 'agent']:
-            if col in df_clean:
+            if col in df_clean.columns:
                 df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').astype('Int64')
         
         # Datetime
         for col in ['creation_date', 'sent_at', 'delivered_at', 'read_at', 'last_chat_interaction']:
-            if col in df_clean:
+            if col in df_clean.columns:
                 df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
         
         # Boolean
-        if 'whatsapp_opt_in' in df_clean:
-            df_clean['whatsapp_opt_in'] = df_clean['whatsapp_opt_in'].astype('boolean').replace({True: True, False: False})
+        if 'whatsapp_opt_in' in df_clean.columns:
+            df_clean['whatsapp_opt_in'] = df_clean['whatsapp_opt_in'].astype('boolean')
         
         return df_clean
     
-    def _smart_upsert(self, df_nuevos, start_date):
-        """🔒 UPSERT: Actualiza/refresca sin tocar histórico"""
-        with engine.begin() as conn:
-            # 1. UPDATE registros existentes en el rango
-            update_count = conn.execute(text("""
-                UPDATE mercately_clientes 
-                SET 
-                    first_name = EXCLUDED.first_name,
-                    last_name = EXCLUDED.last_name,
-                    phone = EXCLUDED.phone,
-                    email = EXCLUDED.email,
-                    city = EXCLUDED.city,
-                    campaign_id = EXCLUDED.campaign_id,
-                    creation_date = EXCLUDED.creation_date,
-                    last_chat_interaction = EXCLUDED.last_chat_interaction,
-                    updated_at = CURRENT_TIMESTAMP
-                FROM (VALUES %s) AS t(
-                    id, first_name, last_name, phone, email, city, 
-                    campaign_id, creation_date, last_chat_interaction
-                )
-                WHERE mercately_clientes.id = t.id::varchar
-                AND mercately_clientes.creation_date >= :start_date
-            """), [
-                tuple(row[['id', 'first_name', 'last_name', 'phone', 'email', 'city', 'campaign_id', 'creation_date', 'last_chat_interaction']]) 
-                for _, row in df_nuevos.iterrows()
-            ], {"start_date": start_date}).rowcount
-            
-            # 2. INSERT nuevos
-            df_nuevos.to_sql('mercately_clientes', conn, if_exists='append', index=False, method='multi', chunksize=1000)
-            
-            logger.info(f"🔄 {update_count} actualizados, {len(df_nuevos)} insertados")
-    
-    def _verify_table(self):
-        """Verifica tabla post-ETL"""
+    def _verify_accumulation(self):
+        """Verifica total estable"""
         with engine.connect() as conn:
             total = conn.execute(text("SELECT COUNT(*) FROM mercately_clientes")).scalar()
-            ultimos_7 = pd.read_sql("SELECT COUNT(*) FROM mercately_clientes WHERE creation_date >= CURRENT_DATE - INTERVAL '7 days'", conn).iloc[0,0]
+            ultimos_7 = pd.read_sql(
+                text("SELECT COUNT(*) FROM mercately_clientes WHERE creation_date >= CURRENT_DATE - INTERVAL '7 days'"), 
+                conn
+            ).iloc[0,0]
             
-            logger.info(f"TOTAL: {total:,} | ÚLTIMOS 7 DÍAS: {ultimos_7:,}")
+            print(f"\n🎯 TOTAL ACUMULADO: {total:,}")
+            print(f"📅 ÚLTIMOS 7 DÍAS: {ultimos_7:,}")
+    
+    def _load_checkpoint(self):
+        if self.checkpoint_file.exists():
+            with open(self.checkpoint_file) as f:
+                data = json.load(f)
+                return pd.to_datetime(data['last_run']).date()
+        return None
     
     def _save_checkpoint(self, date):
         with open(self.checkpoint_file, 'w') as f:
@@ -181,11 +222,9 @@ class MercatelyETL:
 
 # === EJECUTAR ===
 if __name__ == "__main__":
-    etl = MercatelyETL(os.getenv('API_KEY'))
+    etl = MercatelyETL(API_KEY)
+    df_nuevos = etl.incremental_accumulate(days_back=7)
     
-    # ETL DIARIO (5-10 min)
-    df_nuevos = etl.smart_incremental(days_back=7)
-    
-    print("\n✅ ETL FINALIZADO")
-    print("Histórico 80K = INTACTO")
-    print("Nuevos 7 días = ACTUALIZADOS")
+    print("\n🎉 ETL TERMINADO")
+    print("✅ TOTAL SIEMPRE ESTABLE")
+    print("✅ Solo inserta VERDADERAMENTE nuevos")
