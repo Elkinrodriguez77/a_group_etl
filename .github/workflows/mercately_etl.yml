@@ -1,0 +1,42 @@
+name: Mercately ETL
+
+on:
+  schedule:
+    # 12:00 pm Colombia (UTC-5) -> 17:00 UTC, todos los días
+    - cron: '0 17 * * *'
+    # 2:30 pm Colombia -> 19:30 UTC, todos los días
+    - cron: '30 19 * * *'
+    # 7:00 pm Colombia -> 00:00 UTC del día siguiente, todos los días
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Permite ejecutarlo manualmente desde GitHub
+
+jobs:
+  run-etl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ejecutar Mercately ETL
+        env:
+          # Mapeo de secretos de GitHub a variables de entorno que espera el script
+          PGUSER: ${{ secrets.PG_USER }}
+          PGPASSWORD: ${{ secrets.PG_PASS }}
+          PGHOST: ${{ secrets.PG_HOST }}
+          PGPORT: ${{ secrets.PG_PORT }}
+          PGDATABASE: ${{ secrets.PG_DB }}
+          API_KEY: ${{ secrets.MERCATELY_API_KEY }}
+        run: |
+          python mercately_etl.py
+
