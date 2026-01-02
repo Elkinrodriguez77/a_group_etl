@@ -153,8 +153,7 @@ class MercatelyETL:
                     SELECT id, 
                            ROW_NUMBER() OVER (
                                PARTITION BY id 
-                               ORDER BY updated_at DESC NULLS LAST, 
-                                        creation_date DESC NULLS LAST
+                               ORDER BY creation_date DESC NULLS LAST
                            ) as rn
                     FROM mercately_clientes
                 )
