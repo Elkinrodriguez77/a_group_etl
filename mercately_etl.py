@@ -177,12 +177,12 @@ class MercatelyETL:
         df_clean = df.copy().replace({np.nan: None, pd.NA: None})
         
         # JSON
-        for col in ['tags', 'custom_fields', 'customer_addresses']:
+        for col in ['tags', 'custom_fields', 'customer_addresses', 'agent']:
             if col in df_clean.columns:
                 df_clean[col] = df_clean[col].apply(lambda x: json.dumps(x) if x else None)
         
         # Numeric
-        for col in ['campaign_id', 'agent']:
+        for col in ['campaign_id']:
             if col in df_clean.columns:
                 df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').astype('Int64')
         
