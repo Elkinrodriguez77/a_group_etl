@@ -31,12 +31,13 @@ jobs:
       - name: Ejecutar Mercately ETL
         env:
           # Mapeo de secretos de GitHub a variables de entorno que espera el script
-          PGUSER: ${{ secrets.PG_USER }}
-          PGPASSWORD: ${{ secrets.PG_PASS }}
-          PGHOST: ${{ secrets.PG_HOST }}
-          PGPORT: ${{ secrets.PG_PORT }}
-          PGDATABASE: ${{ secrets.PG_DB }}
-          API_KEY: ${{ secrets.MERCATELY_API_KEY }}
+          # IMPORTANTE: Los nombres a la derecha ${{ secrets.NOMBRE }} deben coincidir EXACTAMENTE con tus secretos en GitHub
+          PGUSER: ${{ secrets.PGUSER }}
+          PGPASSWORD: ${{ secrets.PGPASSWORD }}
+          PGHOST: ${{ secrets.PGHOST }}
+          PGPORT: ${{ secrets.PGPORT }}
+          PGDATABASE: ${{ secrets.PGDATABASE }}
+          API_KEY: ${{ secrets.API_KEY }}
         run: |
           python mercately_etl.py
 
