@@ -26,8 +26,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # POSTGRES DESDE .env
+# Manejo robusto del puerto: si es None o vacío (''), usa 5432
+PG_PORT = os.getenv('PGPORT')
+if not PG_PORT:
+    PG_PORT = '5432'
+
 engine = create_engine(
-    f"postgresql+psycopg2://{os.getenv('PGUSER')}:{os.getenv('PGPASSWORD')}@{os.getenv('PGHOST')}:{os.getenv('PGPORT')}/{os.getenv('PGDATABASE')}?sslmode=require"
+    f"postgresql+psycopg2://{os.getenv('PGUSER')}:{os.getenv('PGPASSWORD')}@{os.getenv('PGHOST')}:{PG_PORT}/{os.getenv('PGDATABASE')}?sslmode=require"
 )
 
 API_KEY = os.getenv('API_KEY')
