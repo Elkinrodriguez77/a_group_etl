@@ -26,6 +26,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # POSTGRES DESDE .env
+# Validar variables críticas antes de conectar
+required_vars = ['PGUSER', 'PGPASSWORD', 'PGHOST', 'PGDATABASE', 'API_KEY']
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+if missing_vars:
+    # Imprimir para debug en logs (ocultando valores reales)
+    print("🔍 Estado de variables de entorno:")
+    for var in required_vars:
+        val = os.getenv(var)
+        status = "✅ OK" if val else "❌ FALTA"
+        print(f"   {var}: {status}")
+    raise ValueError(f"❌ Faltan variables de entorno críticas: {', '.join(missing_vars)}")
+
 # Manejo robusto del puerto: si es None o vacío (''), usa 5432
 PG_PORT = os.getenv('PGPORT')
 if not PG_PORT:
