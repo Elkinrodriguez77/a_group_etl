@@ -41,3 +41,10 @@ jobs:
         run: |
           python mercately_etl.py
 
+      - name: Mantener workflow activo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep workflow alive [skip ci]"
+          git push
+
