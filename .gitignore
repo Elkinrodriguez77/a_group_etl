@@ -19,6 +19,7 @@ ENV/
 .env
 mercately_checkpoint.json
 mercately_etl.log
+audit_missing_customers.csv
 *.csv
 *.parquet
 
