@@ -75,13 +75,19 @@ class MercatelyETL:
         self.client = MercatelyClient(api_key)
         self.checkpoint_file = Path("mercately_checkpoint.json")
     
-    def incremental_accumulate(self, days_back=7):
+    def incremental_accumulate(self, days_back=90):
         """🚀 SOLO CLIENTES NUEVOS - TOTAL SIEMPRE ESTABLE"""
-        print(f"🔥 ETL ACUMULATIVO - últimos {days_back} días")
-        
-        # Fechas
+        print(f"🔥 ETL ACUMULATIVO")
+
+        # Fechas: usa checkpoint si existe, si no usa days_back como fallback
         end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=days_back)
+        last_run = self._load_checkpoint()
+        if last_run:
+            start_date = last_run
+            print(f"📂 Checkpoint encontrado — continuando desde {last_run}")
+        else:
+            start_date = end_date - timedelta(days=days_back)
+            print(f"🆕 Sin checkpoint previo — usando days_back={days_back}")
         print(f"📅 Rango: {start_date} → {end_date}")
         
         # 1. OBTENER IDs EXISTENTES (1 seg)
@@ -239,7 +245,7 @@ class MercatelyETL:
 # === EJECUTAR ===
 if __name__ == "__main__":
     etl = MercatelyETL(API_KEY)
-    df_nuevos = etl.incremental_accumulate(days_back=7)
+    df_nuevos = etl.incremental_accumulate(days_back=90)
     
     print("\n🎉 ETL TERMINADO")
     print("✅ TOTAL SIEMPRE ESTABLE")
