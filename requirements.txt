@@ -1,8 +1,7 @@
-pandas
-numpy
-sqlalchemy
-requests
-tqdm
-python-dotenv
-psycopg2-binary
-
+pandas==3.0.6
+numpy==2.4.6
+sqlalchemy==2.1.3
+requests==2.34.2
+tqdm==4.70.1
+python-dotenv==1.2.4
+psycopg2-binary==2.9.13

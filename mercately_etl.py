@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
 import json
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from datetime import datetime, timedelta
 import requests
 from tqdm import tqdm
@@ -59,16 +59,32 @@ class MercatelyClient:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
 
-    def get_customers_incremental(self, start_date, end_date, page=1):
-        """Clientes por rango de fechas"""
+    def get_customers_incremental(self, start_date, end_date, page=1, max_retries=4):
+        """Clientes por rango de fechas.
+        Reintenta ante errores temporales (timeout, 429, 5xx). Si la API sigue fallando
+        lanza excepción: así el run falla visiblemente en vez de terminar 'exitoso' con datos incompletos."""
         params = {"page": page, "start_date": start_date, "end_date": end_date}
-        resp = requests.get(
-            f"{self.base_url}/customers",
-            headers=self.headers,
-            params=params,
-            timeout=45
-        )
-        return resp.json() if resp.status_code == 200 else None
+        for intento in range(1, max_retries + 1):
+            try:
+                resp = requests.get(
+                    f"{self.base_url}/customers",
+                    headers=self.headers,
+                    params=params,
+                    timeout=45
+                )
+            except requests.RequestException as e:
+                error = f"{type(e).__name__}: {e}"
+            else:
+                if resp.status_code == 200:
+                    return resp.json()
+                error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                if resp.status_code != 429 and resp.status_code < 500:
+                    break  # 401/403/404...: reintentar no sirve
+            if intento < max_retries:
+                espera = 5 * 2 ** (intento - 1)
+                logger.warning(f"⚠️ API página {page} falló ({error}) — reintento {intento}/{max_retries - 1} en {espera}s")
+                time.sleep(espera)
+        raise RuntimeError(f"❌ API Mercately falló en página {page}: {error}")
 
 class MercatelyETL:
     def __init__(self, api_key: str):
@@ -149,7 +165,8 @@ class MercatelyETL:
         
         # ANÁLISIS
         print("\n" + "="*80)
-        cols_key = ['first_name', 'last_name', 'phone', 'email', 'city', 'campaign_id', 'creation_date']
+        cols_key = [c for c in ['first_name', 'last_name', 'phone', 'email', 'city', 'campaign_id', 'creation_date']
+                    if c in df_nuevos.columns]
         print("📋 Primeros 10 nuevos:")
         print(df_nuevos[cols_key].head(10))
         
@@ -162,6 +179,13 @@ class MercatelyETL:
         nuevos_insertados = len(df_clean)
         
         with engine.begin() as conn:
+            # 0. SOLO COLUMNAS QUE EXISTEN EN LA TABLA (la API puede agregar campos nuevos)
+            table_cols = {c['name'] for c in inspect(conn).get_columns('mercately_clientes')}
+            extra_cols = [c for c in df_clean.columns if c not in table_cols]
+            if extra_cols:
+                print(f"⚠️ Columnas nuevas en la API que NO existen en la tabla (se omiten): {extra_cols}")
+                df_clean = df_clean.drop(columns=extra_cols)
+
             # 1. CONTAR ANTES
             total_antes = conn.execute(text("SELECT COUNT(*) FROM mercately_clientes")).scalar()
             print(f"📊 TOTAL ANTES: {total_antes:,}")
@@ -170,18 +194,19 @@ class MercatelyETL:
             df_clean.to_sql('mercately_clientes', conn, if_exists='append', 
                            index=False, method='multi', chunksize=1000)
             
-            # 3. DEDUPE FINAL (por si acaso)
+            # 3. DEDUPE FINAL (por si acaso) — conserva 1 fila por id (la más reciente)
+            #    Se borra por ctid (fila física); borrar por id eliminaba TODAS las copias
             dedupe_sql = text("""
                 WITH ranked AS (
-                    SELECT id, 
+                    SELECT ctid,
                            ROW_NUMBER() OVER (
-                               PARTITION BY id 
+                               PARTITION BY id
                                ORDER BY creation_date DESC NULLS LAST
                            ) as rn
                     FROM mercately_clientes
                 )
-                DELETE FROM mercately_clientes 
-                WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+                DELETE FROM mercately_clientes
+                WHERE ctid IN (SELECT ctid FROM ranked WHERE rn > 1)
             """)
             deleted = conn.execute(dedupe_sql).rowcount
             
@@ -197,9 +222,14 @@ class MercatelyETL:
     def _preprocess_df(self, df):
         """Preprocesa TODAS las columnas"""
         df_clean = df.copy().replace({np.nan: None, pd.NA: None})
-        
-        # JSON
-        for col in ['tags', 'custom_fields', 'customer_addresses', 'agent']:
+
+        # JSON: columnas conocidas + cualquier columna nueva que traiga listas/dicts
+        json_cols = {'tags', 'custom_fields', 'customer_addresses', 'agent', 'inbox_chats'}
+        json_cols |= {
+            col for col in df_clean.columns
+            if df_clean[col].apply(lambda x: isinstance(x, (list, dict))).any()
+        }
+        for col in json_cols:
             if col in df_clean.columns:
                 df_clean[col] = df_clean[col].apply(lambda x: json.dumps(x) if x else None)
         

@@ -10,16 +10,25 @@ on:
     - cron: '0 0 * * *'
   workflow_dispatch:  # Permite ejecutarlo manualmente desde GitHub
 
+permissions:
+  contents: write  # necesario para el push del paso "Mantener workflow activo"
+
+concurrency:
+  group: mercately-etl  # evita dos ETL simultáneos insertando en la misma tabla
+  cancel-in-progress: false
+
 jobs:
   run-etl:
-    runs-on: ubuntu-latest
+    # Versión fija: ubuntu-latest migra a Ubuntu 26 desde el 19-oct-2026
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - name: Clonar el repositorio
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configurar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -46,5 +55,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit --allow-empty -m "chore: keep workflow alive [skip ci]"
+          # Por si hubo un push mientras corría el ETL (evita rechazo non-fast-forward)
+          git pull --rebase
           git push
 
